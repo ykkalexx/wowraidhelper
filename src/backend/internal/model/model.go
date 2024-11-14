@@ -12,7 +12,7 @@ type Player struct {
 
 type RaidInfo struct {
 	ID           uint   `json:"id" gorm:"primaryKey"`
-	Name         string `json:"name"`       // Raid name (e.g., "Vault of the Incarnates")
+	Name         string `json:"name"`       // Raid name (e.g., "Nerub-ar Palace")
 	Difficulty   string `json:"difficulty"` // Normal, Heroic, Mythic
 	BossCount    int    `json:"boss_count"`
 	MinItemLevel int    `json:"min_item_level"`
