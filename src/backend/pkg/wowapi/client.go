@@ -1,96 +1,156 @@
 package wowapi
 
 import (
-	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
-	"sync"
-	"time"
-
-	"ykkalexx.com/wowraidhelper/internal/model"
+	"strings"
 )
 
 type Client struct {
     clientID     string
     clientSecret string
     accessToken  string
-    tokenExpiry  time.Time
-    httpClient   *http.Client
-    mu           sync.RWMutex // For thread-safe token management
 }
 
-type authResponse struct {
-    AccessToken string `json:"access_token"`
-    ExpiresIn   int    `json:"expires_in"`
-    TokenType   string `json:"token_type"`
-}
-
-type PlayerDetails struct {
-    Name           string   `json:"name"`
-    Realm          string   `json:"realm"`
-    Class          string   `json:"class"`
-    ActiveSpec     string   `json:"active_spec"`
-    ItemLevel      float64  `json:"average_item_level"`
-    Role           string   `json:"role"`
-    Equipment      Equipment `json:"equipment"`
-    RaidProgress   map[string]RaidProgress `json:"raid_progress"`
-}
-
-type Equipment struct {
-    Items map[string]Item `json:"equipped_items"`
-}
-
-type Item struct {
-    ItemLevel int    `json:"level"`
-    Quality   string `json:"quality"`
-    Slot     string `json:"slot"`
-}
-
-type RaidProgress struct {
-    NormalProgress  int `json:"normal_bosses_killed"`
-    HeroicProgress  int `json:"heroic_bosses_killed"`
-    MythicProgress  int `json:"mythic_bosses_killed"`
+type PlayerInfo struct {
+    Name      string  `json:"name"`
+    Class     string  `json:"class"`
+    ItemLevel float64 `json:"average_item_level"`
+    Spec      string  `json:"active_spec"`
+    Role      string  `json:"role"`        // Tank, Healer, DPS
 }
 
 type RaidInfo struct {
-    ID            int      `json:"id"`
-    Name          string   `json:"name"`
-    Description   string   `json:"description"`
-    MinLevel      int      `json:"minimum_level"`
-    Bosses        []Boss   `json:"encounters"`
-    Difficulties  []string `json:"difficulties"`
-}
-
-type Boss struct {
-    ID          int    `json:"id"`
-    Name        string `json:"name"`
-    Description string `json:"description"`
+    Name        string   `json:"name"`
+    Bosses      int      `json:"boss_count"`
+    Difficulty  string   `json:"difficulty"`
+    MinItemLevel int     `json:"minimum_item_level"`
 }
 
 func NewClient(clientID, clientSecret string) *Client {
     return &Client{
         clientID:     clientID,
         clientSecret: clientSecret,
-        httpClient:   &http.Client{Timeout: 10 * time.Second},
     }
 }
 
-func (c *Client) getAccessToken(ctx context.Context) error {
-	// Implementation to get access token from WoW API
-	return nil
+// Gets token from Blizzard
+func (c *Client) authenticate() error {
+    data := strings.NewReader("grant_type=client_credentials")
+    req, err := http.NewRequest("POST", "https://oauth.battle.net/token", data)
+    if err != nil {
+        return err
+    }
+
+    req.SetBasicAuth(c.clientID, c.clientSecret)
+    req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+
+    resp, err := http.DefaultClient.Do(req)
+    if err != nil {
+        return err
+    }
+    defer resp.Body.Close()
+
+    var result struct {
+        AccessToken string `json:"access_token"`
+    }
+    
+    if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+        return err
+    }
+
+    c.accessToken = result.AccessToken
+    return nil
 }
 
-func (c *Client) GetRaidInfo(ctx context.Context, raidName string) (*model.RaidInfo, error) {
-	// Implementation to fetch raid information from WoW API
-	return nil, nil
+// GetPlayerInfo fetches basic player info from EU servers
+func (c *Client) GetPlayerInfo(name, realm string) (*PlayerInfo, error) {
+    if c.accessToken == "" {
+        if err := c.authenticate(); err != nil {
+            return nil, err
+        }
+    }
+
+    url := fmt.Sprintf("https://eu.api.blizzard.com/profile/wow/character/%s/%s?namespace=profile-eu",
+        strings.ToLower(realm),
+        strings.ToLower(name))
+
+    req, err := http.NewRequest("GET", url, nil)
+    if err != nil {
+        return nil, err
+    }
+
+    req.Header.Add("Authorization", "Bearer "+c.accessToken)
+
+    resp, err := http.DefaultClient.Do(req)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode == 401 { // Token expired
+        if err := c.authenticate(); err != nil {
+            return nil, err
+        }
+        // Retry request with new token
+        req.Header.Set("Authorization", "Bearer "+c.accessToken)
+        resp, err = http.DefaultClient.Do(req)
+        if err != nil {
+            return nil, err
+        }
+        defer resp.Body.Close()
+    }
+
+    var player PlayerInfo
+    if err := json.NewDecoder(resp.Body).Decode(&player); err != nil {
+        return nil, err
+    }
+
+    return &player, nil
 }
 
-func (c *Client) GetPlayerDetails(ctx context.Context, playerName string, realm string) (*PlayerDetails, error) {
-	// Implementation to fetch player details from WoW API
-	return nil, nil
-}
+// GetRaidInfo fetches raid information
+func (c *Client) GetRaidInfo(raidName string) (*RaidInfo, error) {
+    if c.accessToken == "" {
+        if err := c.authenticate(); err != nil {
+            return nil, err
+        }
+    }
 
-//helper function to make HTTP requests
-func (c *Client) fetch(ctx context.Context, url string, result interface{}) error {
-	// Implementation to make HTTP requests
-	return nil
+    url := fmt.Sprintf("https://eu.api.blizzard.com/data/wow/raid/%s?namespace=static-eu",
+        strings.ToLower(raidName))
+
+    req, err := http.NewRequest("GET", url, nil)
+    if err != nil {
+        return nil, err
+    }
+
+    req.Header.Add("Authorization", "Bearer "+c.accessToken)
+
+    resp, err := http.DefaultClient.Do(req)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode == 401 { // Token expired
+        if err := c.authenticate(); err != nil {
+            return nil, err
+        }
+        // Retry request with new token
+        req.Header.Set("Authorization", "Bearer "+c.accessToken)
+        resp, err = http.DefaultClient.Do(req)
+        if err != nil {
+            return nil, err
+        }
+        defer resp.Body.Close()
+    }
+
+    var raid RaidInfo
+    if err := json.NewDecoder(resp.Body).Decode(&raid); err != nil {
+        return nil, err
+    }
+
+    return &raid, nil
 }
