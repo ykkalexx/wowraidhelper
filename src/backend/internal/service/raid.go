@@ -70,7 +70,7 @@ func (s *RaidService) AnalyzeRaid(req RaidAnalysisRequest) (*repository.RaidAnal
         return nil, fmt.Errorf("failed to marshal composition: %w", err)
     }
 
-    // Create simple predictions for now (we'll replace this with ML later)
+    // Create simple predictions for now
     basicPredictions := map[string]string{
         "status": "pending_ml_implementation",
         "note":   "Basic composition analysis only",

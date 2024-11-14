@@ -3,6 +3,8 @@ package repository
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"time"
 )
 
 type Repository struct {
@@ -26,14 +28,24 @@ type RaidAnalysis struct {
     Predictions  json.RawMessage `json:"predictions"`
 }
 
-func NewRepository(dsn string) (*Repository, error) {
-    db, err := sql.Open("mysql", dsn)
+func NewRepository(user, password, host, port, dbName string) (*Repository, error) {
+    // Format: username:password@tcp(hostname:port)/dbname
+    dataSourceName := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true", 
+        user, password, host, port, dbName)
+        
+    db, err := sql.Open("mysql", dataSourceName)
     if err != nil {
-        return nil, err
+        return nil, fmt.Errorf("error opening database: %v", err)
     }
 
+    // Configure connection pool
+    db.SetMaxOpenConns(25)
+    db.SetMaxIdleConns(25)
+    db.SetConnMaxLifetime(5 * time.Minute)
+
+    // Verify connection
     if err := db.Ping(); err != nil {
-        return nil, err
+        return nil, fmt.Errorf("error connecting to database: %v", err)
     }
 
     return &Repository{db: db}, nil
@@ -101,4 +113,8 @@ func (r *Repository) GetRaidInfo(name string) (*RaidInfo, error) {
     }
 
     return &info, nil
+}
+
+func (r *Repository) Close() error {
+    return r.db.Close()
 }
