@@ -1,10 +1,11 @@
 package service
 
 import (
-	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 
-	"ykkalexx.com/wowraidhelper/internal/model"
+	"ykkalexx.com/wowraidhelper/internal/repository"
 	"ykkalexx.com/wowraidhelper/pkg/wowapi"
 )
 
@@ -15,47 +16,90 @@ type RaidAnalysisRequest struct {
 
 type RaidService struct {
     wowClient  *wowapi.Client
-    repository *repository.MySQLRepository
-    mlClient   *MLClient  // ill implement this later for Python service communication
+    repository *repository.Repository
 }
 
-func (s *RaidService) AnalyzeRaid(ctx context.Context, req RaidAnalysisRequest) (*model.RaidAnalysis, error) {
-    // 1. Fetch raid info
-    raidInfo, err := s.wowClient.GetRaidInfo(ctx, req.RaidName)
+func NewRaidService(wowClient *wowapi.Client, repo *repository.Repository) *RaidService {
+    return &RaidService{
+        wowClient:  wowClient,
+        repository: repo,
+    }
+}
+
+func (s *RaidService) AnalyzeRaid(req RaidAnalysisRequest) (*repository.RaidAnalysis, error) {
+    // 1. Fetch raid info from WoW API
+    raidInfo, err := s.wowClient.GetRaidInfo(req.RaidName)
     if err != nil {
         return nil, fmt.Errorf("failed to fetch raid info: %w", err)
     }
 
-    // 2. Fetch all player details
-    players := make([]*wowapi.PlayerDetails, 0, len(req.PlayerNames))
+    // 2. Save or update raid info in database
+    dbRaid := &repository.RaidInfo{
+        Name:         raidInfo.Name,
+        BossCount:    raidInfo.Bosses,
+        MinItemLevel: raidInfo.MinItemLevel,
+        Difficulty:   raidInfo.Difficulty,
+    }
+    
+    if err := s.repository.SaveRaidInfo(dbRaid); err != nil {
+        return nil, fmt.Errorf("failed to save raid info: %w", err)
+    }
+
+    // 3. Fetch all player details
+    var totalItemLevel float64
+    roleCount := map[string]int{
+        "tank":   0,
+        "healer": 0,
+        "dps":    0,
+    }
+
     for _, playerName := range req.PlayerNames {
-        name, realm := parsePlayerString(playerName) // "name-realm" format
-        player, err := s.wowClient.GetPlayerDetails(ctx, name, realm)
+        name, realm := parsePlayerString(playerName)
+        player, err := s.wowClient.GetPlayerInfo(name, realm)
         if err != nil {
             return nil, fmt.Errorf("failed to fetch player %s details: %w", playerName, err)
         }
-        players = append(players, player)
+
+        totalItemLevel += player.ItemLevel
+        roleCount[strings.ToLower(player.Role)]++
     }
 
-    // 3. Prepare data for ML analysis
-    mlData := prepareMlData(raidInfo, players)
-
-    // 4. Send to ML service and get predictions (ill implement this later)
-    analysis, err := s.mlClient.AnalyzeRaid(ctx, mlData)
+    // 4. Create basic analysis (without ML for now)
+    composition, err := json.Marshal(roleCount)
     if err != nil {
-        return nil, fmt.Errorf("failed to perform ML analysis: %w", err)
+        return nil, fmt.Errorf("failed to marshal composition: %w", err)
     }
 
-    // 5. Save and return analysis
-    return s.repository.SaveAnalysis(ctx, analysis)
+    // Create simple predictions for now (we'll replace this with ML later)
+    basicPredictions := map[string]string{
+        "status": "pending_ml_implementation",
+        "note":   "Basic composition analysis only",
+    }
+    predictions, err := json.Marshal(basicPredictions)
+    if err != nil {
+        return nil, fmt.Errorf("failed to marshal predictions: %w", err)
+    }
+
+    analysis := &repository.RaidAnalysis{
+        RaidID:       dbRaid.ID,
+        PlayerCount:  len(req.PlayerNames),
+        AvgItemLevel: totalItemLevel / float64(len(req.PlayerNames)),
+        Composition:  composition,
+        Predictions:  predictions,
+    }
+
+    // 5. Save analysis
+    if err := s.repository.SaveRaidAnalysis(analysis); err != nil {
+        return nil, fmt.Errorf("failed to save analysis: %w", err)
+    }
+
+    return analysis, nil
 }
 
 func parsePlayerString(playerString string) (name, realm string) {
-    // Implementation to split "name-realm" string
-    return
-}
-
-func prepareMlData(raid *model.RaidInfo, players []*wowapi.PlayerDetails) map[string]interface{} {
-    // Implementation to prepare data for ML service
-    return nil
+    parts := strings.Split(playerString, "-")
+    if len(parts) != 2 {
+        return playerString, "defaultRealm"
+    }
+    return parts[0], parts[1]
 }
